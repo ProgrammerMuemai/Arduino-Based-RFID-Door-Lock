@@ -31,7 +31,7 @@ https://youtu.be/LQMiO3PaC_U
 - Buzzer
 - Push Button x2 (LOCK / UNLOCK)
 - Power Supply 12V (แนะนำ ≥ 3A)
-- Buck Converter (เช่น LM2596) แปลง 12V → 5V
+
 
 ---
 
