@@ -12,108 +12,97 @@
 #include <LiquidCrystal_I2C.h>
 
 // ===================== กำหนดขาใช้งาน =====================
-// ขา SDA/SS ของ MFRC522
-#define SS_PIN 10
-
-// ขา Reset ของ MFRC522
-#define RST_PIN 9
-
-// ขารีเลย์หรือ SSR (active-low)
-#define RELAY 2
-
-// ขา buzzer
-#define BUZZER 3
-
-// ปุ่ม LOCK (ต่อแบบ pull-down: ปล่อย=LOW, กด=HIGH)
-#define LOCK 4
-
-// ปุ่ม UNLOCK (pull-down)
-#define UNLOCK 5
+#define SS_PIN 10          // ขา SDA/SS ของ MFRC522
+#define RST_PIN 9          // ขา Reset ของ MFRC522
+#define RELAY 2            // ขารีเลย์หรือ SSR (active-low)
+#define BUZZER 3           // ขา buzzer
+#define LOCK 4             // ปุ่ม LOCK (pull-down: ปล่อย=LOW, กด=HIGH)
+#define UNLOCK 5           // ปุ่ม UNLOCK (pull-down)
 
 // ===================== สร้างอ็อบเจกต์ =====================
-// สร้างอ็อบเจกต์ LCD ขนาด 16x2 ที่ address 0x27
-LiquidCrystal_I2C lcd(0x27, 16, 2);
-
-// สร้างอ็อบเจกต์ RFID
-MFRC522 rfid(SS_PIN, RST_PIN);
-
-// โครงสร้าง key (ใช้กับ MIFARE Classic)
-MFRC522::MIFARE_Key key;
-
-// ตัวแปรเก็บ UID (คงไว้จากโค้ดเดิม)
-byte nuidPICC[4];
+LiquidCrystal_I2C lcd(0x27, 16, 2);   // LCD 16x2 ที่ address 0x27
+MFRC522 rfid(SS_PIN, RST_PIN);        // RFID object
+MFRC522::MIFARE_Key key;              // key สำหรับ MIFARE Classic
+byte nuidPICC[4];                     // คงไว้จากโค้ดเดิม
 
 // ===================== รายการ UID ที่อนุญาต =====================
-// UID เป็นเลขฐานสิบ (DEC) ขนาด 4 ไบต์
-// เพิ่มบัตรใหม่ = เพิ่มแถวใหม่
 const byte ALLOW_LIST[][4] = {
   {163, 174, 133, 165},   // บัตรใบแรก (ของคุณ)
   // {12, 34, 56, 78},    // ตัวอย่างบัตรใบที่ 2
 };
-
-// จำนวนบัตรทั้งหมดในระบบ
 const byte ALLOW_COUNT = sizeof(ALLOW_LIST) / sizeof(ALLOW_LIST[0]);
 
+// ===================== ตัวแปรระบบกันเด้ง/กันบูตเด้ง =====================
+unsigned long bootMs = 0;             // เวลาเริ่มบูต เพื่อ ignore ปุ่มช่วงแรก
+const unsigned long BOOT_IGNORE_MS = 1000;  // ไม่รับปุ่มช่วง 1 วินาทีแรกหลังเปิดเครื่อง
+
 // ===================== ฟังก์ชันตรวจ UID =====================
-// ตรวจว่า UID ที่อ่านมาอยู่ใน ALLOW_LIST หรือไม่
 bool isAllowedUID(const byte *uid, byte size) {
+  if (size != 4) return false; // โค้ดนี้รองรับ UID 4 ไบต์เท่านั้น
 
-  // ระบบนี้ออกแบบมารองรับ UID 4 ไบต์เท่านั้น
-  if (size != 4) return false;
-
-  // วนเช็คทีละบัตรใน ALLOW_LIST
   for (byte i = 0; i < ALLOW_COUNT; i++) {
-
     bool match = true;
-
-    // เทียบ UID ทีละไบต์
     for (byte j = 0; j < 4; j++) {
       if (uid[j] != ALLOW_LIST[i][j]) {
         match = false;
         break;
       }
     }
-
-    // ถ้าตรงครบ 4 ไบต์ → อนุญาต
     if (match) return true;
   }
-
-  // ไม่พบ UID นี้ในระบบ
   return false;
+}
+
+// ===================== ฟังก์ชันหน้าเริ่มต้น =====================
+void lcdHomeScreen() {
+  lcd.clear();
+  lcd.setCursor(5, 0);
+  lcd.print("WELCOME");
+  lcd.setCursor(0, 1);
+  lcd.print("TAP CARD TO OPEN");
+
+  // บังคับกลับไป LOCK ทุกครั้งที่กลับหน้าหลัก
+  // relay/SSR active-low => HIGH = ปิดวงจร (ล็อก)
+  digitalWrite(RELAY, HIGH);
 }
 
 // ===================== SETUP =====================
 void setup() {
-
-  // เปิด Serial Monitor ที่ 9600 bps
+  // เปิด Serial Monitor
   Serial.begin(9600);
 
-  // เริ่มต้น SPI
-  SPI.begin();
-
-  // เริ่มต้นโมดูล RFID
-  rfid.PCD_Init();
-
-  // กำหนดโหมดขา I/O
+  // ---------- ตั้งค่า I/O ก่อน (กันอาการรีเลย์เด้งตอนบูต) ----------
   pinMode(RELAY, OUTPUT);
   pinMode(BUZZER, OUTPUT);
-  pinMode(LOCK, INPUT);      // pull-down ภายนอก
+  pinMode(LOCK, INPUT);       // คุณต่อแบบ pull-down ภายนอก
   pinMode(UNLOCK, INPUT);
 
-  // รีเลย์ active-low → HIGH = ปิด (ล็อก)
+  // บังคับให้ "ล็อกแน่นอน" ตั้งแต่เริ่ม
+  // (กันโมดูลรีเลย์/SSR บางรุ่นพริบตอนบูต)
   digitalWrite(RELAY, HIGH);
+  delay(200);
+  digitalWrite(RELAY, HIGH);
+
+  // ---------- บังคับ UNO เป็น SPI master แน่ ๆ (สำคัญ) ----------
+  pinMode(SS_PIN, OUTPUT);
+  digitalWrite(SS_PIN, HIGH);
+
+  // เริ่มต้น SPI + RFID
+  SPI.begin();
+  rfid.PCD_Init();
 
   // เริ่มต้น LCD
   lcd.init();
   lcd.backlight();
-
-  // แสดงหน้าเริ่มต้น
   lcdHomeScreen();
 
-  // กำหนด key ของ MIFARE Classic เป็น FF FF FF FF FF FF
+  // ตั้ง key เป็น FF FF FF FF FF FF (คงไว้ตามเดิม)
   for (byte i = 0; i < 6; i++) {
     key.keyByte[i] = 0xFF;
   }
+
+  // ตั้งเวลาเริ่มบูต เพื่อ ignore ปุ่มช่วงแรก
+  bootMs = millis();
 
   // ข้อความ debug
   Serial.println(F("RFID system ready"));
@@ -124,45 +113,50 @@ void setup() {
 // ===================== LOOP =====================
 void loop() {
 
+  // ---------- ignore ปุ่มช่วงบูต 1 วินาทีแรก ----------
+  // กันปุ่มเด้ง/สัญญาณรบกวนช่วงเปิดเครื่อง ทำให้ปลดล็อกเอง
+  if (millis() - bootMs < BOOT_IGNORE_MS) {
+    // แต่ยังให้สแกนบัตรได้ตามปกติ ถ้าคุณอยากให้สแกนได้เลย
+    // หากอยาก freeze ทั้งระบบช่วงบูต ให้ return; ได้เลย
+    // return;
+  }
+
   // ---------- ส่วนจัดการปุ่ม (debounce + edge detect) ----------
   static bool lastLock = LOW;
   static bool lastUnlock = LOW;
   static unsigned long lastBtnMs = 0;
   const unsigned long DEBOUNCE_MS = 120;
 
-  // อ่านสถานะปุ่ม (pull-down: กด = HIGH)
-  bool nowLock   = digitalRead(LOCK);
-  bool nowUnlock = digitalRead(UNLOCK);
+  bool nowLock   = digitalRead(LOCK);    // pull-down: กด = HIGH
+  bool nowUnlock = digitalRead(UNLOCK);  // pull-down: กด = HIGH
 
-  // กันการเด้งของปุ่ม
-  if (millis() - lastBtnMs > DEBOUNCE_MS) {
+  // ทำงานเฉพาะหลังพ้นช่วง ignore และผ่าน debounce
+  if (millis() - bootMs >= BOOT_IGNORE_MS) {
+    if (millis() - lastBtnMs > DEBOUNCE_MS) {
 
-    // กด LOCK (LOW → HIGH)
-    if (nowLock == HIGH && lastLock == LOW) {
-      digitalWrite(RELAY, HIGH);   // ล็อก
-      delay(30);                   // ให้ไฟนิ่ง
-      rfid.PCD_Init();             // ฟื้น RFID กันหลุด
-      lastBtnMs = millis();
-    }
+      // กด LOCK ครั้งเดียว (LOW -> HIGH)
+      if (nowLock == HIGH && lastLock == LOW) {
+        digitalWrite(RELAY, HIGH);  // ล็อก (active-low)
+        delay(30);                  // ให้ไฟนิ่ง
+        rfid.PCD_Init();            // ฟื้น RFID กันหลุด (จาก EMI)
+        lastBtnMs = millis();
+      }
 
-    // กด UNLOCK
-    if (nowUnlock == HIGH && lastUnlock == LOW) {
-      digitalWrite(RELAY, LOW);    // ปลดล็อก
-      delay(30);
-      rfid.PCD_Init();
-      lastBtnMs = millis();
+      // กด UNLOCK ครั้งเดียว (LOW -> HIGH)
+      if (nowUnlock == HIGH && lastUnlock == LOW) {
+        digitalWrite(RELAY, LOW);   // ปลดล็อก
+        delay(30);
+        rfid.PCD_Init();
+        lastBtnMs = millis();
+      }
     }
   }
 
-  // เก็บสถานะปุ่มรอบก่อน
   lastLock = nowLock;
   lastUnlock = nowUnlock;
 
   // ---------- ส่วนอ่าน RFID ----------
-  // ถ้าไม่มีบัตรใหม่ → ออกจาก loop ทันที
   if (!rfid.PICC_IsNewCardPresent()) return;
-
-  // ถ้าอ่าน UID ไม่สำเร็จ → ออก
   if (!rfid.PICC_ReadCardSerial()) return;
 
   // ตรวจชนิดบัตร
@@ -172,7 +166,6 @@ void loop() {
   if (piccType != MFRC522::PICC_TYPE_MIFARE_MINI &&
       piccType != MFRC522::PICC_TYPE_MIFARE_1K &&
       piccType != MFRC522::PICC_TYPE_MIFARE_4K) {
-
     rfid.PICC_HaltA();
     rfid.PCD_StopCrypto1();
     return;
@@ -204,7 +197,7 @@ void loop() {
     // ปลดล็อก
     digitalWrite(RELAY, LOW);
 
-    // เสียง beep
+    // เสียง beep 1 ครั้ง
     digitalWrite(BUZZER, HIGH);
     delay(100);
     digitalWrite(BUZZER, LOW);
@@ -216,7 +209,7 @@ void loop() {
       delay(1000);
     }
 
-    // กลับหน้าหลัก
+    // กลับหน้าหลัก (และล็อก)
     lcdHomeScreen();
 
   } else {
@@ -233,22 +226,9 @@ void loop() {
     lcdHomeScreen();
   }
 
-  // สั่งหยุดการ์ด
+  // จบ session ของบัตร
   rfid.PICC_HaltA();
   rfid.PCD_StopCrypto1();
-}
-
-// ===================== หน้าจอเริ่มต้น =====================
-void lcdHomeScreen() {
-  lcd.clear();
-  lcd.setCursor(5, 0);
-  lcd.print("WELCOME");
-
-  lcd.setCursor(0, 1);
-  lcd.print("TAP CARD TO OPEN");
-
-  // กลับสู่สถานะล็อก
-  digitalWrite(RELAY, HIGH);
 }
 
 // ===================== ฟังก์ชันช่วยแสดง UID =====================
